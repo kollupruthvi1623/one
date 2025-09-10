@@ -1,0 +1,17 @@
+expense-tracker/
+├── backend/
+│   ├── lambda_functions/
+│   │   ├── auth/
+│   │   ├── expenses/
+│   │   ├── analytics/
+│   │   └── categories/
+│   ├── models/
+│   ├── utils/
+│   └── requirements.txt
+├── infrastructure/
+│   ├── app.py
+│   ├── stacks/
+│   └── constructs/
+├── frontend/
+│   └── (React/Vue app)
+└── tests/
