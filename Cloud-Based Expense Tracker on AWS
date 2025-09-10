@@ -1,0 +1,10 @@
+Architecture Overview
+The expense tracker will use the following AWS services:
+
+Backend: Python Lambda functions with API Gateway
+Framework: FastAPI/Mangum for serverless Python APIs
+Database: DynamoDB for expense data
+Authentication: AWS Cognito for user management
+Storage: S3 for receipt images
+Frontend: React/Vue.js hosted on S3 + CloudFront
+Infrastructure: AWS CDK (Python) for deployment
