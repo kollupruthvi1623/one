@@ -1,0 +1,186 @@
+# backend/services/dynamodb_service.py
+import boto3
+from boto3.dynamodb.conditions import Key, Attr
+from botocore.exceptions import ClientError
+from typing import List, Optional, Dict, Any
+from decimal import Decimal
+import json
+from datetime import datetime
+import uuid
+import os
+
+class DynamoDBService:
+    def __init__(self):
+        self.dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+        self.expenses_table = self.dynamodb.Table(os.environ.get('EXPENSES_TABLE', 'ExpenseTracker-Expenses'))
+        self.categories_table = self.dynamodb.Table(os.environ.get('CATEGORIES_TABLE', 'ExpenseTracker-Categories'))
+    
+    def decimal_to_float(self, obj):
+        """Convert Decimal to float for JSON serialization"""
+        if isinstance(obj, Decimal):
+            return float(obj)
+        elif isinstance(obj, dict):
+            return {k: self.decimal_to_float(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self.decimal_to_float(i) for i in obj]
+        return obj
+    
+    # Expense Operations
+    def create_expense(self, user_id: str, expense_data: dict) -> dict:
+        """Create a new expense"""
+        expense_id = str(uuid.uuid4())
+        timestamp = datetime.utcnow().isoformat()
+        
+        item = {
+            'user_id': user_id,
+            'expense_id': expense_id,
+            'amount': Decimal(str(expense_data['amount'])),
+            'category': expense_data['category'],
+            'description': expense_data['description'],
+            'date': expense_data['date'],
+            'year_month': expense_data['date'][:7],  # YYYY-MM format
+            'tags': expense_data.get('tags', []),
+            'receipt_url': expense_data.get('receipt_url'),
+            'created_at': timestamp,
+            'updated_at': timestamp
+        }
+        
+        try:
+            self.expenses_table.put_item(Item=item)
+            return self.decimal_to_float(item)
+        except ClientError as e:
+            raise Exception(f"Error creating expense: {e.response['Error']['Message']}")
+    
+    def get_expense(self, user_id: str, expense_id: str) -> Optional[dict]:
+        """Get a single expense by ID"""
+        try:
+            response = self.expenses_table.get_item(
+                Key={
+                    'user_id': user_id,
+                    'expense_id': expense_id
+                }
+            )
+            return self.decimal_to_float(response.get('Item'))
+        except ClientError as e:
+            raise Exception(f"Error getting expense: {e.response['Error']['Message']}")
+    
+    def list_expenses(self, user_id: str, filters: Optional[dict] = None) -> List[dict]:
+        """List expenses with optional filters"""
+        try:
+            # Build query parameters
+            key_condition = Key('user_id').eq(user_id)
+            
+            # Use GSI for year_month queries if provided
+            if filters and filters.get('year_month'):
+                response = self.expenses_table.query(
+                    IndexName='YearMonthIndex',
+                    KeyConditionExpression=key_condition & Key('year_month').eq(filters['year_month'])
+                )
+            else:
+                response = self.expenses_table.query(
+                    KeyConditionExpression=key_condition
+                )
+            
+            items = response.get('Items', [])
+            
+            # Apply additional filters
+            if filters:
+                if filters.get('category'):
+                    items = [i for i in items if i['category'] == filters['category']]
+                if filters.get('start_date'):
+                    items = [i for i in items if i['date'] >= filters['start_date']]
+                if filters.get('end_date'):
+                    items = [i for i in items if i['date'] <= filters['end_date']]
+                if filters.get('min_amount'):
+                    items = [i for i in items if i['amount'] >= Decimal(str(filters['min_amount']))]
+                if filters.get('max_amount'):
+                    items = [i for i in items if i['amount'] <= Decimal(str(filters['max_amount']))]
+                if filters.get('tags'):
+                    filter_tags = set(filters['tags'])
+                    items = [i for i in items if filter_tags.intersection(set(i.get('tags', [])))]
+            
+            return [self.decimal_to_float(item) for item in items]
+        except ClientError as e:
+            raise Exception(f"Error listing expenses: {e.response['Error']['Message']}")
+    
+    def update_expense(self, user_id: str, expense_id: str, updates: dict) -> dict:
+        """Update an existing expense"""
+        try:
+            # Build update expression
+            update_expression = "SET updated_at = :updated_at"
+            expression_values = {':updated_at': datetime.utcnow().isoformat()}
+            
+            for key, value in updates.items():
+                if value is not None:
+                    update_expression += f", {key} = :{key}"
+                    if key == 'amount':
+                        expression_values[f':{key}'] = Decimal(str(value))
+                    else:
+                        expression_values[f':{key}'] = value
+                    
+                    # Update year_month if date is updated
+                    if key == 'date':
+                        update_expression += ", year_month = :year_month"
+                        expression_values[':year_month'] = value[:7]
+            
+            response = self.expenses_table.update_item(
+                Key={
+                    'user_id': user_id,
+                    'expense_id': expense_id
+                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_values,
+                ReturnValues='ALL_NEW'
+            )
+            
+            return self.decimal_to_float(response['Attributes'])
+        except ClientError as e:
+            raise Exception(f"Error updating expense: {e.response['Error']['Message']}")
+    
+    def delete_expense(self, user_id: str, expense_id: str) -> bool:
+        """Delete an expense"""
+        try:
+            self.expenses_table.delete_item(
+                Key={
+                    'user_id': user_id,
+                    'expense_id': expense_id
+                }
+            )
+            return True
+        except ClientError as e:
+            raise Exception(f"Error deleting expense: {e.response['Error']['Message']}")
+    
+    # Category Operations
+    def create_category(self, user_id: str, category_data: dict) -> dict:
+        """Create a new category"""
+        category_id = str(uuid.uuid4())
+        timestamp = datetime.utcnow().isoformat()
+        
+        item = {
+            'user_id': user_id,
+            'category_id': category_id,
+            'name': category_data['name'],
+            'description': category_data.get('description'),
+            'color': category_data.get('color', '#000000'),
+            'icon': category_data.get('icon'),
+            'budget_limit': Decimal(str(category_data['budget_limit'])) if category_data.get('budget_limit') else None,
+            'created_at': timestamp,
+            'expense_count': 0,
+            'total_spent': Decimal('0')
+        }
+        
+        try:
+            self.categories_table.put_item(Item=item)
+            return self.decimal_to_float(item)
+        except ClientError as e:
+            raise Exception(f"Error creating category: {e.response['Error']['Message']}")
+    
+    def list_categories(self, user_id: str) -> List[dict]:
+        """List all categories for a user"""
+        try:
+            response = self.categories_table.query(
+                KeyConditionExpression=Key('user_id').eq(user_id)
+            )
+            return [self.decimal_to_float(item) for item in response.get('Items', [])]
+        except ClientError as e:
+            raise Exception(f"Error listing categories: {e.response['Error']['Message']}")
