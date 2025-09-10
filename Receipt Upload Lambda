@@ -1,0 +1,70 @@
+# backend/lambda_functions/receipts/handler.py
+import json
+import boto3
+import base64
+import uuid
+from datetime import datetime
+import os
+
+s3 = boto3.client('s3')
+BUCKET_NAME = os.environ.get('RECEIPTS_BUCKET', 'expense-tracker-receipts')
+
+def lambda_handler(event, context):
+    """Handle receipt upload"""
+    try:
+        # Extract user ID
+        user_id = event['requestContext']['authorizer']['claims']['sub']
+        
+        # Parse request body
+        body = json.loads(event['body'])
+        file_content = base64.b64decode(body['file_content'])
+        file_extension = body.get('file_extension', 'jpg')
+        expense_id = body.get('expense_id')
+        
+        # Generate unique filename
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        filename = f"receipts/{user_id}/{expense_id}_{timestamp}.{file_extension}"
+        
+        # Upload to S3
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=filename,
+            Body=file_content,
+            ContentType=f'image/{file_extension}',
+            Metadata={
+                'user_id': user_id,
+                'expense_id': expense_id,
+                'upload_date': datetime.utcnow().isoformat()
+            }
+        )
+        
+        # Generate presigned URL (valid for 7 days)
+        presigned_url = s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': filename},
+            ExpiresIn=604800  # 7 days
+        )
+        
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({
+                'receipt_url': presigned_url,
+                's3_key': filename,
+                'message': 'Receipt uploaded successfully'
+            })
+        }
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({
+                'error': str(e)
+            })
+        }
