@@ -1,0 +1,49 @@
+# backend/models/expense.py
+from pydantic import BaseModel, Field, validator
+from typing import Optional, List
+from datetime import datetime
+from decimal import Decimal
+import uuid
+
+class ExpenseBase(BaseModel):
+    amount: Decimal = Field(..., gt=0, description="Expense amount")
+    category: str = Field(..., min_length=1, max_length=50)
+    description: str = Field(..., max_length=500)
+    date: datetime
+    tags: Optional[List[str]] = []
+    receipt_url: Optional[str] = None
+    
+    @validator('amount')
+    def validate_amount(cls, v):
+        if v <= 0:
+            raise ValueError('Amount must be positive')
+        return round(v, 2)
+
+class ExpenseCreate(ExpenseBase):
+    pass
+
+class ExpenseUpdate(BaseModel):
+    amount: Optional[Decimal] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    date: Optional[datetime] = None
+    tags: Optional[List[str]] = None
+    receipt_url: Optional[str] = None
+
+class Expense(ExpenseBase):
+    expense_id: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+    year_month: str
+    
+    class Config:
+        orm_mode = True
+
+class ExpenseFilter(BaseModel):
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    category: Optional[str] = None
+    min_amount: Optional[Decimal] = None
+    max_amount: Optional[Decimal] = None
+    tags: Optional[List[str]] = None
