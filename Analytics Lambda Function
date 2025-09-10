@@ -1,0 +1,144 @@
+# backend/lambda_functions/analytics/handler.py
+import json
+import boto3
+from boto3.dynamodb.conditions import Key
+from decimal import Decimal
+from datetime import datetime, timedelta
+from collections import defaultdict
+import os
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(os.environ.get('EXPENSES_TABLE', 'ExpenseTracker-Expenses'))
+
+def decimal_default(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    raise TypeError
+
+def lambda_handler(event, context):
+    """Generate analytics for expenses"""
+    # Extract user ID from authorizer
+    user_id = event['requestContext']['authorizer']['claims']['sub']
+    
+    # Parse query parameters
+    params = event.get('queryStringParameters', {}) or {}
+    start_date = params.get('start_date')
+    end_date = params.get('end_date')
+    
+    # Query expenses
+    response = table.query(
+        KeyConditionExpression=Key('user_id').eq(user_id)
+    )
+    
+    expenses = response.get('Items', [])
+    
+    # Filter by date range if provided
+    if start_date and end_date:
+        expenses = [
+            e for e in expenses 
+            if start_date <= e['date'] <= end_date
+        ]
+    
+    # Calculate analytics
+    analytics = calculate_analytics(expenses)
+    
+    return {
+        'statusCode': 200,
+        'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        },
+        'body': json.dumps(analytics, default=decimal_default)
+    }
+
+def calculate_analytics(expenses):
+    """Calculate various analytics metrics"""
+    if not expenses:
+        return {
+            'total_amount': 0,
+            'total_expenses': 0,
+            'average_expense': 0,
+            'category_breakdown': {},
+            'monthly_trend': {},
+            'daily_average': 0,
+            'top_expenses': [],
+            'tags_analysis': {}
+        }
+    
+    total_amount = sum(float(e['amount']) for e in expenses)
+    total_count = len(expenses)
+    
+    # Category breakdown
+    category_breakdown = defaultdict(float)
+    category_count = defaultdict(int)
+    for expense in expenses:
+        category = expense['category']
+        category_breakdown[category] += float(expense['amount'])
+        category_count[category] += 1
+    
+    # Monthly trend
+    monthly_trend = defaultdict(float)
+    monthly_count = defaultdict(int)
+    for expense in expenses:
+        month = expense['date'][:7]  # YYYY-MM
+        monthly_trend[month] += float(expense['amount'])
+        monthly_count[month] += 1
+    
+    # Daily average
+    if expenses:
+        dates = [datetime.fromisoformat(e['date']) for e in expenses]
+        date_range = (max(dates) - min(dates)).days + 1
+        daily_average = total_amount / date_range if date_range > 0 else total_amount
+    else:
+        daily_average = 0
+    
+    # Top expenses
+    top_expenses = sorted(expenses, key=lambda x: float(x['amount']), reverse=True)[:10]
+    
+    # Tags analysis
+    tags_analysis = defaultdict(lambda: {'count': 0, 'total': 0})
+    for expense in expenses:
+        for tag in expense.get('tags', []):
+            tags_analysis[tag]['count'] += 1
+            tags_analysis[tag]['total'] += float(expense['amount'])
+    
+    # Calculate percentages for categories
+    category_percentages = {
+        cat: {
+            'amount': amount,
+            'percentage': (amount / total_amount * 100) if total_amount > 0 else 0,
+            'count': category_count[cat],
+            'average': amount / category_count[cat]
+        }
+        for cat, amount in category_breakdown.items()
+    }
+    
+    # Monthly statistics
+    monthly_stats = {
+        month: {
+            'total': amount,
+            'count': monthly_count[month],
+            'average': amount / monthly_count[month]
+        }
+        for month, amount in monthly_trend.items()
+    }
+    
+    return {
+        'total_amount': total_amount,
+        'total_expenses': total_count,
+        'average_expense': total_amount / total_count if total_count > 0 else 0,
+        'category_breakdown': category_percentages,
+        'monthly_trend': monthly_stats,
+        'daily_average': daily_average,
+        'top_expenses': [
+            {
+                'expense_id': e['expense_id'],
+                'amount': float(e['amount']),
+                'category': e['category'],
+                'description': e['description'],
+                'date': e['date']
+            }
+            for e in top_expenses
+        ],
+        'tags_analysis': dict(tags_analysis)
+    }
